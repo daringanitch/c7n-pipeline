@@ -1,0 +1,13 @@
+version: 0.2
+
+phases:
+  build:
+    commands:
+      - echo Build started on `date`
+      - cloudcustodian run --output-dir=./logs -s *.yml
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - tar -xzf logs.tgz ./logs
+artifacts:
+  - logs.tgz
