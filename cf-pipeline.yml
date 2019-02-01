@@ -1,0 +1,239 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# Name:   Caterpillar Custodian Deployment Pipeline
+# Author: AWS Professional Services
+# Date:   September 2017
+# Description: This template creates a Pipeline for automatic Cloud Custodian
+# Policy deployment using S3 as the source repository and CodeBuild to launch
+# the Custodian commands.
+
+Parameters:
+  PipelineName:
+    Description: A name for pipeline
+    Type: String
+    Default: cloudcustodian
+  S3Bucket:
+    Description: The name of the S3 bucket that contains the source artifact, which must be in the same region as this stack
+    Type: String
+  CodeCommit:
+    Description: The ARN of the CodeCommit Repository storing the policies.
+    Type: String
+  CustodianRoleName:
+    Description: Role to be created for running Custodian in Lambda or Config. Need to match the setting in the custodian policy file.
+    Type: String
+    Default: CCustodianLambda
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "CodePipeline Settings"
+        Parameters:
+          - PipelineName
+          - S3Bucket
+          - SourceS3Key
+      - Label:
+          default: "Custodian Settings"
+        Parameters:
+          - CustodianRoleName
+    ParameterLabels:
+      CustodianRoleName:
+        default: Role Name for Custodian
+
+Resources:
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Join [
+          "-",
+          [
+            "custodian-codepipeline",
+            !Select [2, !Split ["/", !Ref "AWS::StackId"]],
+          ],
+        ]
+      VersioningConfiguration:
+        Status: Enabled
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref "ArtifactStoreBucket"
+        Type: S3
+      DisableInboundStageTransitions: []
+      Name: !Ref "PipelineName"
+      RoleArn: !GetAtt [PipelineRole, Arn]
+      Stages:
+        - Name: S3Source
+          Actions:
+            - Name: TemplateSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: "1"
+              Configuration:
+                S3Bucket: !Ref "S3Bucket"
+                S3ObjectKey: !Ref "SourceS3Key"
+              OutputArtifacts:
+                - Name: TemplateSource
+              RunOrder: "1"
+        - Name: DeployPolicies
+          Actions:
+            - Name: RunCustodianCommands
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              InputArtifacts:
+                - Name: TemplateSource
+              Configuration:
+                ProjectName: !Ref "CodeBuildProject"
+              RunOrder: "1"
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        !Join [
+          "_",
+          [!Ref "PipelineName", "CodePipelineServiceRole", !Ref "AWS::Region"],
+        ]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: ["sts:AssumeRole"]
+            Effect: Allow
+            Principal:
+              Service: [codepipeline.amazonaws.com]
+        Version: "2012-10-17"
+      Path: /
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetBucketVersioning"
+                Effect: Allow
+                Resource:
+                  - !Join ["", ["arn:aws:s3:::", !Ref "S3Bucket", "/*"]]
+                  - !Join ["", ["arn:aws:s3:::", !Ref "S3Bucket"]]
+              - Action:
+                  - "s3:PutObject"
+                Effect: Allow
+                Resource:
+                  - !Join ["", [!GetAtt [ArtifactStoreBucket, Arn], "/*"]]
+              - Action:
+                  - "codebuild:BatchGetBuilds"
+                  - "codebuild:StartBuild"
+                Effect: Allow
+                Resource:
+                  - !Join [
+                      "",
+                      [
+                        "arn:aws:codebuild:",
+                        !Ref "AWS::Region",
+                        ":",
+                        !Ref "AWS::AccountId",
+                        ":project/",
+                        !Ref "CodeBuildProject",
+                      ],
+                    ]
+              - Action:
+                  - "iam:PassRole"
+                  - "sns:Publish"
+                Effect: Allow
+                Resource: "*"
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Join ["_", [!Ref "PipelineName", "runcommand"]]
+      Description: To Build a Python container and run the custodian commands
+      ServiceRole: !Ref CodeBuildRole
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image:
+      Source:
+        Type: CODEPIPELINE
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        !Join [
+          "_",
+          [!Ref "PipelineName", "CodeBuildServiceRole", !Ref "AWS::Region"],
+        ]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: codebuild.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "lambda:*"
+                  - "s3:*"
+                  - "logs:*"
+                  - "events:*"
+                  - "iam:PassRole"
+                  - "config:Put*"
+                  - "config:Get*"
+                  - "config:List*"
+                  - "config:Describe*"
+                Effect: Allow
+                Resource: "*"
+
+  CustodianRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref "CustodianRoleName"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: ["sts:AssumeRole"]
+            Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+        Version: "2012-10-17"
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+      Policies:
+        - PolicyName: ConfigAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "ec2:*"
+                  - "s3:*"
+                  - "config:*"
+                  - "tag:Get"
+                  - "iam:PassRole"
+                  - "logs:*"
+                Effect: Allow
+                Resource: "*"
+Outputs:
+  CodePipeline:
+    Value: !Ref Pipeline
+  CodeBuild:
+    Value: !Ref CodeBuildProject
+  CodePipelineArtifactBucket:
+    Value: !Ref ArtifactStoreBucket
+  CustodianRole:
+    Value: !Ref CustodianRole
+  CodePipelineServiceRole:
+    Value: !Ref PipelineRole
+  CodeBuildServiceRole:
+    Value: !Ref CodeBuildRole
