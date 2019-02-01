@@ -18,6 +18,9 @@ Parameters:
   CodeCommit:
     Description: The ARN of the CodeCommit Repository storing the policies.
     Type: String
+  DockerECR:
+    Description: The URI of the Docker image.
+    Type: String
   CustodianRoleName:
     Description: Role to be created for running Custodian in Lambda or Config. Need to match the setting in the custodian policy file.
     Type: String
@@ -159,7 +162,7 @@ Resources:
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
-        Image:
+        Image: !Ref "DockerECR"
       Source:
         Type: CODEPIPELINE
 

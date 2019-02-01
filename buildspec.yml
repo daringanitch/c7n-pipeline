@@ -4,7 +4,7 @@ phases:
   build:
     commands:
       - echo Build started on `date`
-      - cloudcustodian run --output-dir=./logs -s *.yml
+      - cloudcustodian run --output-dir=./logs -s policies/*.yml
   post_build:
     commands:
       - echo Build completed on `date`
